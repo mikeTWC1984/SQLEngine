@@ -10,10 +10,9 @@ create table cronicle (
  updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
  )
 ```
-This plugin is using knex orm as a wrapper on top of database driver. It will support SQLite, MySql and Postgres (those would have same api for upsert). Oracle/MSSQL won't work out of the box because those use merge statement for upsert. However knex support them, so just need some tweaking to make it work. 
+This plugin is using knex orm as a wrapper on top of database driver. Plugin will work with SQLite, MySql and Postgres. Oracle and MSSQL won't work out of the box because those have different mechanism for upsert (a.k.a key/value store put). However knex support them, so just need some tweaking to make it work. 
 
 ## How to use
-  ```npm i knex```
 
 ```bash
 # install knex:
