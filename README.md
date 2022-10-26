@@ -15,8 +15,11 @@ This plugin is using knex orm as a wrapper on top of database driver. Plugin wil
 ## How to use
 
 ```bash
-# install knex:
-npm i knex
+
+# clone this repo and install dependencies
+git clone https://github.com/mikeTWC1984/SQLEngine
+cd SQLEngine
+npm install
 
 # install db driver
 # below is the list of tested drivers for this plugin:
@@ -25,18 +28,20 @@ npm i sqlite3  # for sqlite
 npm i pg       # for postgres
 npm i mysql2   # for mysql
 
-# copy SQL.js to the root of your cronicle installation (e.g. /opt/cronicle)
-# then in config.json add engine_path property under storage, e.g.:
-# "engine_path": "/opt/cronicle/SQL.js"
-```
+# now refer to SQL.js in you cronicle config.json using engine_path property (use absolute path)
+# "engine_path": "/SQLEngine/SQL.js"
 
+# other installation option - go to cronicle root directory, install knex and db driver you need (e.g. npm i knex sqlite3)
+# in config.json specify path to SQL.js ("engine_path": "/opt/cronicle/SQL.js")
+
+```
 here are Storage configuration you can use. "SQL" property is inline with knex documentation.
 
 ## Basic configuration for SQLite
 ```json
 	"Storage": {
 		"engine": "SQL",
-		"engine_path": "/opt/cronicle/SQL.js",
+		"engine_path": "/SQLEngine/SQL.js",
 		"list_page_size": 50,
 		"concurrency": 4,
 		"log_event_types": {
