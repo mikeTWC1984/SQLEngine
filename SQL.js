@@ -7,6 +7,8 @@
 // for sqlite: npm i sqlite3
 // for mysql: npm i mysql2
 // for postgres: npm i pg
+// for oracle: npm i oracledb
+// for mssql: npm i tedious
 
 
 const Component = require("pixl-server/component");
@@ -16,8 +18,8 @@ const { Readable } = require('stream');
 
 module.exports = class SQLEngine extends Component {
 
-    __name = 'SQLEngine'
-    __parent = Component
+     __name = 'SQLEngine'
+    // __parent = Component
 
     /**
      * @type {Knex}}
@@ -27,7 +29,20 @@ module.exports = class SQLEngine extends Component {
     /**
      * @type {String}
      */
-    tableName = 'cronicle'  // can set with table property on SQL config
+    tableName  // can set with table property on SQL config. default = cronicle
+
+    /**
+     * @type {('sqlite3'|'pg'|'mysql2'|'oracledb'|'mssql')}
+     */
+    client  // db client type
+
+    getBlobSizeFn = 'length(V)'
+
+    /**
+     * @type {String}
+     * @description need to use Merge Statement with Oracle/MSSQL
+     */
+    mergeStmt
 
     defaultConfig = {
         client: 'sqlite3',
@@ -41,34 +56,64 @@ module.exports = class SQLEngine extends Component {
     startup(callback) {
         let publicConf = JSON.parse(JSON.stringify(this.config.get()))
         delete (publicConf.connection || {}).password // hide password on logging
-        this.logDebug(2, "Setting up SQL", publicConf);
+        this.logDebug(2, "Setting up SQL Connection", publicConf);
         this.setup(callback);
     }
 
     async setup(callback) {
         // setup SQL connection
-        var self = this;
-        var r_config = this.config.get();
+        const self = this;
+        const sql_config = this.config.get();
 
-        this.keyPrefix = (r_config.keyPrefix || '').replace(/^\//, '');
-        if (this.keyPrefix && !this.keyPrefix.match(/\/$/)) this.keyPrefix += '/';
+        // this.keyPrefix = (sql_config.keyPrefix || '').replace(/^\//, '');
+        // if (this.keyPrefix && !this.keyPrefix.match(/\/$/)) this.keyPrefix += '/';
+        // this.keyTemplate = (sql_config.keyTemplate || '').replace(/^\//, '').replace(/\/$/, '');
 
-        this.keyTemplate = (r_config.keyTemplate || '').replace(/^\//, '').replace(/\/$/, '');
-
-        r_config.return_buffers = true;
-        r_config.retry_strategy = function (opts) {
+        sql_config.return_buffers = true;
+        sql_config.retry_strategy = function (opts) {
             // simple backoff strategy
             return Math.min(opts.attempt * 100, 3000);
         };
 
-        this.db = knex(Tools.copyHashRemoveKeys(r_config, { keyPrefix: 1, keyTemplate: 1 }))
+        this.db = knex(Tools.copyHashRemoveKeys(sql_config, { keyPrefix: 1, keyTemplate: 1 }))
 
         this.db.client.pool.on('createSuccess', () => {
             self.logDebug(3, "SQL connected successfully")           
         })
 
-        if (r_config.table) this.tableName = r_config.table
+        this.tableName = sql_config.table || 'cronicle'
 
+        this.client = sql_config.client
+        
+        if (this.client === 'mssql') {
+            this.getBlobSizeFn = 'len(V)'
+            this.mergeStmt = `
+            MERGE INTO "${this.tableName}" T 
+            USING (SELECT ? as K, ? as V ) S
+            ON (s.K = t.K)
+            WHEN MATCHED THEN UPDATE SET t.V = s.V, t."updated" = CURRENT_TIMESTAMP
+            WHEN NOT MATCHED THEN INSERT (K, V) VALUES (s.K, s.V);     
+            `
+        }
+
+        if (this.client === 'oracledb') {
+            this.mergeStmt = `
+            DECLARE
+            k VARCHAR(256);
+            b BLOB;
+           BEGIN 
+               k := ?;
+               b := ?;
+               MERGE INTO "${this.tableName}" T
+               USING (SELECT k AS K FROM DUAL) S
+               ON (s.K = t.K)
+               WHEN MATCHED THEN UPDATE SET t.V = b, t."updated" = CURRENT_TIMESTAMP
+               WHEN NOT MATCHED THEN INSERT (K, V) VALUES (s.K, b );
+           END;     
+            `
+        }
+
+        // create destiation table if not exists. It should happen while running "control.sh setup"
         if (! await this.db.schema.hasTable(this.tableName)) {
             await this.db.schema
             .createTable(this.tableName, table => {
@@ -85,23 +130,28 @@ module.exports = class SQLEngine extends Component {
 
     prepKey(key) {
         // prepare key for S3 based on config
-        var md5 = Tools.digestHex(key, 'md5');
+        // var md5 = Tools.digestHex(key, 'md5');
 
-        if (this.keyPrefix) {
-            key = this.keyPrefix + key;
-        }
+        // if (this.keyPrefix) {
+        //     key = this.keyPrefix + key;
+        // }
 
-        if (this.keyTemplate) {
-            var idx = 0;
-            var temp = this.keyTemplate.replace(/\#/g, function () {
-                return md5.substr(idx++, 1);
-            });
-            key = Tools.substitute(temp, { key: key, md5: md5 });
-        }
+        // if (this.keyTemplate) {
+        //     var idx = 0;
+        //     var temp = this.keyTemplate.replace(/\#/g, function () {
+        //         return md5.substr(idx++, 1);
+        //     });
+        //     key = Tools.substitute(temp, { key: key, md5: md5 });
+        // }
 
         return key;
     }
 
+    /**
+     * @param {string | number} key
+     * @param {string | Buffer} value
+     * @param {(err: Error | null ) => void} callback
+     */
     async put(key, value, callback) {
         // store key+value in SQL
         var self = this;
@@ -115,11 +165,17 @@ module.exports = class SQLEngine extends Component {
             value = JSON.stringify(value);
         }
 
+        // For oracle/mssql use MERGE statement, for other drivers use "INSEERT/ON CONFLICT" mechanism
         try {
-            await this.db(this.tableName)
-                .insert({ K: key, V: Buffer.from(value), updated: new Date()})  //Buffer.from(value) 
-                .onConflict('K')
-                .merge()
+            if (this.mergeStmt) { // this.client === 'mssql' || this.client === 'oracledb'
+                await this.db.raw(this.mergeStmt, [ key, Buffer.from(value)])                
+            }
+            else {
+                await this.db(this.tableName)
+                    .insert({ K: key, V: Buffer.from(value), updated: this.db.fn.now() })
+                    .onConflict('K')
+                    .merge()
+            }
 
             self.logDebug(9, "Store complete: " + key);
             if (callback) callback(null);
@@ -156,7 +212,10 @@ module.exports = class SQLEngine extends Component {
         key = this.prepKey(key);
 
         try {
-            let rows = await this.db(this.tableName).where('K', key).select([this.db.raw('length(V) as len'), this.db.raw('1 as mod')])
+            let rows = await this.db(this.tableName).where('K', key).select([
+                this.db.raw(`${this.getBlobSizeFn} as len`),
+                this.db.raw('1 as mod')
+            ])
             if (rows.length > 0) {
                 callback(null, rows[0]);
             }
@@ -272,7 +331,6 @@ module.exports = class SQLEngine extends Component {
                 end = buf.length ? buf.length - 1 : 0;
             }
             if (isNaN(start) || isNaN(end) || (start < 0) || (start >= buf.length) || (end < start) || (end >= buf.length)) {
-                download.destroy();
                 callback(new Error("Invalid byte range (" + start + '-' + end + ") for key: " + key + " (len: " + buf.length + ")"), null);
                 return;
             }
