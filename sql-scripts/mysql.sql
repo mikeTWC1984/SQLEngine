@@ -11,7 +11,10 @@
       WHEN minutes IS NOT NULL THEN 'hourly'
       ELSE 'custom' END AS schedule
       ,t.hours, t.minutes, t.weekdays -- , t.days, t.months
-   , chain, notify_success, notes, username AS createdBy
+   , chain, notify_success, notes
+   , FROM_UNIXTIME(ROUND(t.created,0)) as created
+   , FROM_UNIXTIME(ROUND(t.modified,0)) as modified
+   , username AS createdBy
  
  from cronicle C,
  json_table(convert(C.V using utf8), '$.items[*]' columns (
