@@ -65,17 +65,7 @@ module.exports = class SQLEngine extends Component {
         const self = this;
         const sql_config = this.config.get();
 
-        // this.keyPrefix = (sql_config.keyPrefix || '').replace(/^\//, '');
-        // if (this.keyPrefix && !this.keyPrefix.match(/\/$/)) this.keyPrefix += '/';
-        // this.keyTemplate = (sql_config.keyTemplate || '').replace(/^\//, '').replace(/\/$/, '');
-
-        sql_config.return_buffers = true;
-        sql_config.retry_strategy = function (opts) {
-            // simple backoff strategy
-            return Math.min(opts.attempt * 100, 3000);
-        };
-
-        this.db = knex(Tools.copyHashRemoveKeys(sql_config, { keyPrefix: 1, keyTemplate: 1 }))
+        this.db = knex(sql_config)
 
         this.db.client.pool.on('createSuccess', () => {
             self.logDebug(3, "SQL connected successfully")           
@@ -96,7 +86,7 @@ module.exports = class SQLEngine extends Component {
             `
         }
 
-        if (this.client === 'oracledb') {
+        if (this.client === 'oracledb') { // need to pass large blob via variable to avoid "too long" error
             this.mergeStmt = `
             DECLARE
             k VARCHAR(256);
@@ -118,9 +108,11 @@ module.exports = class SQLEngine extends Component {
             await this.db.schema
             .createTable(this.tableName, table => {
                 table.string('K', 256).primary();
-                table.binary('V');
+                // default BLOB size for mysql is limited with 64KB
+                this.client.startsWith('mysql') ? table.specificType('V', 'longblob') : table.binary('V');
                 table.dateTime('created').defaultTo(this.db.fn.now());
                 table.dateTime('updated').defaultTo(this.db.fn.now());
+                table.index(['updated']);
             })          
         }
 
@@ -128,22 +120,7 @@ module.exports = class SQLEngine extends Component {
        
     }
 
-    prepKey(key) {
-        // prepare key for S3 based on config
-        // var md5 = Tools.digestHex(key, 'md5');
-
-        // if (this.keyPrefix) {
-        //     key = this.keyPrefix + key;
-        // }
-
-        // if (this.keyTemplate) {
-        //     var idx = 0;
-        //     var temp = this.keyTemplate.replace(/\#/g, function () {
-        //         return md5.substr(idx++, 1);
-        //     });
-        //     key = Tools.substitute(temp, { key: key, md5: md5 });
-        // }
-
+    prepKey(key) { // no need to prep key for SQL at this point
         return key;
     }
 
@@ -207,7 +184,7 @@ module.exports = class SQLEngine extends Component {
     }
 
     async head(key, callback) {
-        // head value by given key (select K, length(V) from cronicle where K = 'key')
+        // head value by given key. Just return blob size
         var self = this;
         key = this.prepKey(key);
 
